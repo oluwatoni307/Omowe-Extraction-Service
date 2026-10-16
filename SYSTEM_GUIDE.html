@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A source-grounded field guide to the PDF extraction service: architecture, behavior, risks, and a practical code review method.">
+  <title>PDF Extraction Service | System Field Guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #182a2d;
+      --muted: #506266;
+      --paper: #f5f7f4;
+      --surface: #ffffff;
+      --line: #d8e1dc;
+      --teal: #0d665f;
+      --teal-soft: #e5f2ed;
+      --coral: #a5442d;
+      --coral-soft: #fbede7;
+      --gold: #745812;
+      --gold-soft: #f5f0db;
+      --code: #edf2f0;
+      --serif: Georgia, "Times New Roman", serif;
+      --sans: "Segoe UI", Tahoma, sans-serif;
+      --mono: Consolas, "Courier New", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: 17px;
+      line-height: 1.68;
+    }
+    a { color: var(--teal); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--coral); }
+    .masthead {
+      padding: 52px max(24px, calc((100vw - 1180px) / 2)) 42px;
+      color: #f7fbf8;
+      background: linear-gradient(115deg, #113f3d 0%, #17665e 58%, #3d8171 100%);
+      border-bottom: 5px solid #d88b5d;
+    }
+    .eyebrow, .label, .nav-title, .status, .section-kicker {
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .eyebrow { color: #c6e7d9; }
+    h1, h2, h3, h4 { font-family: var(--sans); line-height: 1.2; }
+    h1 { max-width: 850px; margin: 14px 0 12px; font-size: clamp(34px, 5vw, 58px); font-weight: 650; }
+    .masthead p { max-width: 760px; margin: 0; color: #e1efea; font-size: 19px; }
+    .mast-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+    .status { padding: 6px 10px; border: 1px solid #8bb7a9; border-radius: 3px; color: #f4faf6; letter-spacing: 0.03em; text-transform: none; }
+    .layout { display: grid; grid-template-columns: 238px minmax(0, 820px); gap: 56px; max-width: 1180px; margin: 0 auto; padding: 38px 24px 90px; align-items: start; }
+    nav { position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow: auto; padding: 18px 16px; background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--teal); }
+    .nav-title { margin: 0 0 10px; color: var(--muted); }
+    nav ol { margin: 0; padding-left: 20px; }
+    nav li { margin: 5px 0; font-family: var(--sans); font-size: 13px; line-height: 1.4; }
+    nav a { color: var(--ink); text-decoration: none; }
+    nav a:hover { color: var(--teal); text-decoration: underline; }
+    main { min-width: 0; }
+    section { scroll-margin-top: 24px; margin: 0 0 54px; }
+    .section-kicker { margin-bottom: 7px; color: var(--teal); }
+    h2 { margin: 0 0 18px; font-size: 30px; font-weight: 650; }
+    h3 { margin: 28px 0 10px; font-size: 20px; }
+    h4 { margin: 22px 0 8px; font-size: 16px; }
+    p { margin: 0 0 15px; }
+    ul, ol { padding-left: 23px; }
+    li { margin: 6px 0; }
+    .lead { font-size: 20px; line-height: 1.58; }
+    .note, .callout { margin: 20px 0; padding: 15px 18px; border-left: 4px solid var(--teal); background: var(--teal-soft); }
+    .callout.warning { border-color: var(--coral); background: var(--coral-soft); }
+    .callout.decision { border-color: #b28a25; background: var(--gold-soft); }
+    .note strong, .callout strong { font-family: var(--sans); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+    .fact { padding: 15px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 3px; }
+    .fact .label { margin-bottom: 5px; color: var(--muted); letter-spacing: 0.04em; }
+    .fact p { margin: 0; }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 24px 0; padding: 0; list-style: none; }
+    .flow li { position: relative; min-height: 112px; margin: 0; padding: 13px 12px; background: var(--surface); border-top: 3px solid var(--teal); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); font-family: var(--sans); font-size: 13px; line-height: 1.45; }
+    .flow li:not(:last-child)::after { position: absolute; z-index: 1; top: 43%; right: -12px; content: "›"; display: grid; place-items: center; width: 18px; height: 24px; color: var(--teal); background: var(--paper); font-size: 24px; }
+    .flow b { display: block; margin-bottom: 5px; color: var(--teal); font-size: 12px; }
+    table { width: 100%; margin: 18px 0 24px; border-collapse: collapse; background: var(--surface); font-size: 15px; }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #e8efeb; font-family: var(--sans); font-size: 13px; }
+    code, pre { font-family: var(--mono); font-size: 0.88em; }
+    code { padding: 1px 4px; background: var(--code); border-radius: 2px; overflow-wrap: anywhere; }
+    pre { overflow-x: auto; padding: 15px 17px; background: #1c3032; color: #edf5f0; line-height: 1.55; }
+    pre code { padding: 0; background: transparent; color: inherit; }
+    .source-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; padding: 0; list-style: none; }
+    .source-list li { margin: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); font-family: var(--sans); font-size: 14px; }
+    .source-list a { font-family: var(--mono); font-size: 13px; }
+    .risk { margin: 15px 0; padding: 17px 19px; background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--coral); }
+    .risk h3 { margin: 0 0 7px; font-size: 18px; }
+    .risk p:last-child { margin-bottom: 0; }
+    .tag { display: inline-block; margin-right: 7px; padding: 2px 7px; border-radius: 2px; background: var(--coral-soft); color: #84331f; font-family: var(--sans); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .checklist { padding-left: 0; list-style: none; }
+    .checklist li { position: relative; padding-left: 27px; }
+    .checklist li::before { position: absolute; left: 0; top: 0; content: "□"; color: var(--teal); font-family: var(--sans); font-size: 19px; }
+    .footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--sans); font-size: 13px; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; gap: 25px; }
+      nav { position: static; max-height: none; }
+      nav ol { columns: 2; }
+    }
+    @media (max-width: 620px) {
+      body { font-size: 16px; }
+      .masthead { padding: 35px 22px 30px; }
+      .masthead p { font-size: 17px; }
+      .layout { padding: 24px 18px 60px; }
+      h2 { font-size: 26px; }
+      .grid, .source-list { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .flow li { min-height: auto; }
+      .flow li:not(:last-child)::after { top: auto; right: 12px; bottom: -17px; transform: rotate(90deg); }
+      nav ol { columns: 1; }
+      table { display: block; overflow-x: auto; }
+    }
+    @media print {
+      body { background: #fff; color: #111; font-size: 11pt; }
+      .masthead { padding: 20px 0; color: #111; background: #fff; border-bottom: 2px solid #17665e; }
+      .masthead p, .eyebrow { color: #333; }
+      .status { color: #111; border-color: #777; }
+      .layout { display: block; max-width: none; padding: 20px 0; }
+      nav { display: none; }
+      section { break-inside: avoid; margin-bottom: 28px; }
+      .risk, .fact, table, pre { break-inside: avoid; }
+      a { color: #111; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="eyebrow">Engineering field guide · Source-grounded review</div>
+    <h1>PDF Extraction Service</h1>
+    <p>A practical map of what the service does, how its contracts fit together, where its heuristics can surprise you, and how to review it before making consequential changes.</p>
+    <div class="mast-meta">
+      <span class="status">Coverage: all repository source and tests</span>
+      <span class="status">Test baseline: 14 extractor tests passing</span>
+      <span class="status">Use: technical orientation and decision support</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="Guide contents">
+      <p class="nav-title">Contents</p>
+      <ol>
+        <li><a href="#brief">Executive brief</a></li>
+        <li><a href="#flow">Request flow</a></li>
+        <li><a href="#modules">Source map</a></li>
+        <li><a href="#behavior">Behavior in detail</a></li>
+        <li><a href="#contracts">Data contracts</a></li>
+        <li><a href="#trust">Reliability boundaries</a></li>
+        <li><a href="#decisions">Decision register</a></li>
+        <li><a href="#review">How to review the code</a></li>
+        <li><a href="#verification">Verification and operations</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section id="brief">
+        <div class="section-kicker">01 · Executive brief</div>
+        <h2>What this system is</h2>
+        <p class="lead">This repository implements a stateless HTTP service that checks for extractable text, converts PDFs into typed blocks in an inferred reading sequence, and returns the extracted document with a paragraph-message list and importance signals. The primary goal is text extraction; table and image extraction are additional capabilities.</p>
+        <div class="grid">
+          <div class="fact"><div class="label">Intended input</div><p>PDFs with extractable text, especially books and papers that should read in sequence.</p></div>
+          <div class="fact"><div class="label">Explicitly out of scope</div><p>Mostly scanned PDFs, including those with an OCR text layer. Visually complex born-digital layouts are accepted, though their reading order may need validation.</p></div>
+          <div class="fact"><div class="label">Implemented output</div><p>A validated <code>Document</code> with headings, paragraphs, tables, images, and code/formula blocks, plus each paragraph's text and detected importance signals.</p></div>
+          <div class="fact"><div class="label">Not implemented here</div><p>Segmentation, blob creation, LLM rewriting, persistence, authentication, and client-side asset storage.</p></div>
+        </div>
+        <div class="callout warning"><strong>Scope clarification:</strong> the README calls this a service that “turns a PDF into a validated Document,” but the actual <code>/extract</code> response also includes an <code>importance</code> object when eligible. The model file declares future pipeline contracts, but this repository does not implement those later stages.</div>
+        <p>Use this guide to decide what to trust and what to validate with real documents. Eligibility requires extractable text and no match to the mostly-scanned heuristic; it does not certify text completeness or reading order. A 200 response can mean the PDF was rejected by the eligibility gate; success is represented by the response body's <code>eligible</code> field.</p>
+      </section>
+
+      <section id="flow">
+        <div class="section-kicker">02 · Runtime path</div>
+        <h2>One upload, from bytes to response</h2>
+        <ol class="flow" aria-label="Request processing steps">
+          <li><b>1 · Receive</b><code>POST /extract</code> reads the multipart <code>file</code> upload.</li>
+          <li><b>2 · Guard</b>Check suffix, empty body, 80 MiB cap, PDF readability, and encryption.</li>
+          <li><b>3 · Qualify</b>Require extractable text and reject PDFs that appear mostly scanned.</li>
+          <li><b>4 · Extract</b>Infer reading order and block types; raster assets become PNG data URIs.</li>
+          <li><b>5 · Add messages and return</b>Return each paragraph's text with its block ID and detected signals.</li>
+        </ol>
+        <h3>Actual route behavior</h3>
+        <table>
+          <thead><tr><th>Request or condition</th><th>Observed behavior</th></tr></thead>
+          <tbody>
+            <tr><td><code>GET /health</code></td><td>Returns <code>{"status":"ok"}</code>. This checks process responsiveness, not PDF-engine readiness.</td></tr>
+            <tr><td>Non-<code>.pdf</code> filename, empty upload, unreadable PDF, encrypted PDF</td><td>Returns HTTP 400 with a detail message.</td></tr>
+            <tr><td>Upload larger than 80 MiB</td><td>Returns HTTP 413. The route reads at most the configured limit plus one byte.</td></tr>
+            <tr><td>Readable but ineligible PDF</td><td>Returns HTTP 200 with <code>eligible: false</code> and rejection reasons.</td></tr>
+            <tr><td>Eligible PDF</td><td>Returns HTTP 200 with <code>eligible: true</code>, <code>document</code>, and <code>importance</code>.</td></tr>
+            <tr><td>Unexpected failure inside extraction</td><td>Logs an exception and returns HTTP 500. Eligibility and importance-result generation are outside this extraction try/except.</td></tr>
+          </tbody>
+        </table>
+        <pre><code>POST /extract  multipart/form-data: file=&lt;document.pdf&gt;
+
+Eligible:   {"eligible": true, "document": {...}, "importance": {
+              "passages": [{"block_id": "...", "message": "...", "signals": [...]}]}}
+Ineligible: {"eligible": false, "reasons": ["no_text_layer" | "scanned_document"]}</code></pre>
+    <p class="section-kicker">Language-neutral pseudocode · API handler</p>
+    <pre class="pseudocode"><code>when POST /extract receives an uploaded file:
+  if the filename does not end in .pdf:
+    return HTTP 400
+
+  read at most 80 MiB + 1 byte
+  if no bytes were uploaded: return HTTP 400
+  if more than 80 MiB were read: return HTTP 413
+
+  try to open the bytes as a PDF
+  if opening fails: return HTTP 400
+  if the PDF is encrypted: return HTTP 400
+
+  if no page contains extractable non-whitespace text:
+    return HTTP 200 with eligible=false and reason=no_text_layer
+  if at least half of pages have images covering 70% or more of page area:
+    return HTTP 200 with eligible=false and reason=scanned_document
+
+  document = extract all pages into typed blocks
+  importance = score paragraphs internally and keep only those scoring above 0.7
+  return HTTP 200 with eligible=true, document, and importance</code></pre>
+    <p>This is a map of the route in <code>main.py</code>, not Python you can run. The service returns HTTP 200 for an ineligible PDF; check the <code>eligible</code> field, not only the HTTP status.</p>
+      </section>
+
+      <section id="modules">
+        <div class="section-kicker">03 · Repository map</div>
+        <h2>Where to look first</h2>
+        <ul class="source-list">
+          <li><a href="app/main.py">app/main.py</a><br>HTTP boundary, upload validation, orchestration, response model.</li>
+          <li><a href="app/eligibility.py">app/eligibility.py</a><br>Pre-flight text-presence and mostly-scanned checks.</li>
+          <li><a href="app/extractor.py">app/extractor.py</a><br>PDF layout heuristics, ordering, block extraction, image rendering.</li>
+          <li><a href="app/document_model.py">app/document_model.py</a><br>Pydantic schemas and cross-stage data contracts.</li>
+          <li><a href="app/importance.py">app/importance.py</a><br>Paragraph messages and detected signals.</li>
+          <li><a href="app/importance_model.py">app/importance_model.py</a><br>Importance response schema.</li>
+          <li><a href="tests/test_extractor.py">tests/test_extractor.py</a><br>Fixture-backed eligibility, extraction, serialization, and importance-message tests.</li>
+          <li><a href="tests/fixtures/test.pdf">tests/fixtures/test.pdf</a><br>Four-page representative fixture asserted by the tests.</li>
+          <li><a href="README.md">README.md</a><br>Scope, API summary, running instructions, and accepted limitations.</li>
+          <li><a href="requirements.txt">requirements.txt</a> · <a href="Dockerfile">Dockerfile</a><br>Pinned runtime dependencies and container launch.</li>
+        </ul>
+        <p><code>app/__init__.py</code> is empty. There is no repository-level test configuration or additional implementation directory in the workspace snapshot.</p>
+      </section>
+
+      <section id="behavior">
+        <div class="section-kicker">04 · Behavior</div>
+        <h2>What the code actually computes</h2>
+
+        <h3>Eligibility gate: born-digital text, not page scans</h3>
+        <p><code>check_eligibility</code> first requires non-whitespace text on at least one page. It then counts pages containing an image that covers at least 70% of the page. If at least half the pages meet that test, it returns <code>scanned_document</code>, even if OCR made text extractable. A PDF with no extractable text returns <code>no_text_layer</code>. This geometric heuristic catches full-page scans with OCR text, but can miss partial-page scans and may reject a digital document whose pages are mostly full-page images.</p>
+        <div class="note"><strong>Why there is no font/layout rejection:</strong> different font names, decorative pages, and vector artwork do not by themselves make text impossible to extract. Born-digital documents with unusual fonts or layouts are accepted and attempted. Font metadata still helps the extractor recognize bold text, code, and formulas; it does not determine scan eligibility.</div>
+        <p><strong>Reading sequence is a separate quality goal.</strong> The extractor uses page coordinates and heuristics to order blocks, including a two-column guess. Passing the eligibility gate does not guarantee that sequence is right. Check extracted blocks in order on representative single-column, multi-column, and visually complex books; improve ordering without turning font variety into a rejection rule.</p>
+        <table>
+          <thead><tr><th>Rule</th><th>Current setting</th><th>Interpretation to verify</th></tr></thead>
+          <tbody>
+            <tr><td>Text presence</td><td>Any non-whitespace extracted text on any page is required.</td><td>Does not prove completeness or order; scanned pages are checked separately.</td></tr>
+            <tr><td>Mostly scanned pages</td><td>At least 50% of pages have an image covering at least 70% of page area.</td><td>Rejects with <code>scanned_document</code>, including OCR-overlaid scans; partial scans may not be detected.</td></tr>
+            <tr><td>Fonts and visual layout</td><td>Not used to reject a PDF.</td><td>Extraction still uses font/coordinate cues; verify the resulting sequence separately.</td></tr>
+          </tbody>
+        </table>
+          <p class="section-kicker">Language-neutral pseudocode · eligibility</p>
+          <pre class="pseudocode"><code>function hasExtractableText(pdf):
+        for each page in pdf, from first through last:
+          text = ask PDF library for that page's text
+          if text contains anything besides whitespace:
+            return true
+        return false
+
+      if not hasExtractableText(pdf):
+        reject with no_text_layer
+      else if at least half of pages have an image covering 70% or more:
+        reject with scanned_document
+      else:
+        continue to extraction</code></pre>
+          <p>Important difference: this first asks whether <em>any</em> text exists anywhere, then rejects documents that look mostly like page scans. It does not check that every page has text or that every word was recovered. OCR is not performed by this service.</p>
+
+        <h3>Block extraction</h3>
+        <p><code>extract_document</code> derives a document-wide body size and line pitch, detects repeated page furniture, and then processes each page. The page processor removes likely headers/page numbers, absorbs text contained in recognized tables and image regions, identifies captions, infers one- or two-column ordering, classifies lines, merges compatible adjacent lines, and constructs Pydantic block objects.</p>
+        <ul>
+          <li><strong>Headings:</strong> inferred from relative font size, boldness, uppercase styling, and numbering patterns. Heading hierarchy/level is not emitted.</li>
+          <li><strong>Paragraphs:</strong> neighboring lines merge according to font size, vertical pitch, indentation, sentence-ending width, and bullet rules.</li>
+          <li><strong>Tables:</strong> PyMuPDF's ruled-table detector is used; candidates need at least two rows and two columns and enough non-empty cells. Empty extracted cells normalize to empty strings.</li>
+          <li><strong>Images:</strong> embedded raster images and selected clusters of vector drawings are clipped and rendered at 150 DPI to PNG data URIs.</li>
+          <li><strong>Code:</strong> monospace-looking lines are joined with approximate indentation reconstruction, except when most document text is itself monospaced.</li>
+          <li><strong>Formulas:</strong> selected math-font lines become formula-kind <code>CodeBlock</code>s with a cropped PNG. Extracted formula text is explicitly not the rendering source of truth.</li>
+        </ul>
+        <h4>What the layout terms mean</h4>
+        <ul>
+          <li><strong>Page furniture</strong> means repeated page decoration such as a running header, footer, or page number. On PDFs with at least three pages, the extractor looks near the top and bottom 9% of each page for repeated text at a similar vertical position. Digits are normalized first, so changing page numbers can still match. Repeated candidates seen on at least three pages and roughly 40% of the document are removed. A real line repeated in the margin can be mistaken for furniture; a unique header may survive.</li>
+          <li><strong>Line pitch</strong> is the typical vertical distance between the top coordinates of successive body-text lines from the same PDF text block, estimated as a median. It is not a word count or a font measurement. When two adjacent lines are considered for the same paragraph, a top-coordinate difference larger than about 1.35 times the estimated pitch (scaled for font size) starts a new block. If there are too few usable measurements, pitch defaults to 1.25 times body font size.</li>
+          <li><strong>Image captions</strong> are not baked into the image. A nearby line beginning with a recognizable label such as <code>Figure 2</code> or <code>Fig. 2</code> is removed from the ordinary text lines and stored in <code>ImageBlock.caption</code>. It must be within about 45 PDF points above or below the image and overlap it horizontally. Unlabeled or farther-away captions may remain ordinary text or may not be associated with the image.</li>
+          <li><strong>Table extraction</strong> asks PyMuPDF to detect table geometry and extract a grid of cell strings. A candidate is kept only if it has at least two rows and columns and at least 30% of its cells are non-empty. Blank cells become empty strings, and entirely blank rows are dropped. Text lines substantially inside the accepted table are removed from the normal text stream to avoid duplicate text. The result is a <code>TableBlock</code> with <code>rows</code> and an optional nearby labeled caption; cell styling, merged-cell meaning, and visual fidelity are not preserved.</li>
+        </ul>
+        <p><strong>How ordering handles lines:</strong> PyMuPDF first combines spans that it considers part of one text line. In a page not classified as two-column, the resulting text lines and visual items are sorted by their top Y coordinate, then their left X coordinate. The extractor does <em>not</em> cluster separate items whose Y coordinates are merely close into an approximate shared line. So same-height items are ordered left-to-right only when their top coordinates tie; small coordinate differences can put the slightly higher item first. A two-column page uses a separate midpoint/band heuristic: generally left column, then right column within each band. Neither path understands reading intent, so inspect complex pages.</p>
+        <p><strong>Block length is not fixed.</strong> A paragraph block is formed by merging adjacent compatible text lines until spacing, indentation, font, punctuation, bullets, or another item suggests a boundary. There is no maximum number of words, characters, or tokens. For ordinary prose, a paragraph-shaped block might often be around 50–150 words, but that is only a rough writing convention, not a measured guarantee or a setting in this code. A long paragraph can produce a long block, and imperfect PDF spacing can merge or split paragraphs unexpectedly.</p>
+        <div class="callout decision"><strong>Practical chunk-size starting point:</strong> “block” means an extracted structural item; “chunk” means a later unit chosen for search or a model prompt. This repository does not implement chunking. As an initial downstream experiment, try about 300–600 words per semantic chunk (roughly 400–800 English tokens, with substantial variation), keep headings with their text, and avoid splitting a paragraph unless it is unusually long. Measure answer quality and prompt limits on your own material before treating that range as a requirement.</div>
+        <p>Ordering and classification are inferences over PDF coordinates and font metadata. The model guarantees non-decreasing page numbers, but not that block order within a page matches a reader's intended sequence. A complex layout should produce an extraction to inspect, not an automatic eligibility rejection.</p>
+        <p class="section-kicker">Language-neutral pseudocode · PDF to blocks</p>
+        <pre class="pseudocode"><code>function extractDocument(pdf):
+      read text lines and image locations from every page
+      estimate common body-text size and line spacing for the whole PDF
+      find repeated headers and footers
+      outputBlocks = []
+
+      for each page in page-number order:
+        remove likely repeated headers, footers, and page numbers
+        find ruled tables; extract their cell text and nearby captions
+        find raster images and likely diagram regions
+        remove text lines already covered by an extracted table or image
+        pageItems = remaining text lines + tables + images
+        order pageItems by their page coordinates
+
+        for each text line in that order:
+          if it looks like code: classify as code
+          else if it uses a recognized math font: classify as formula
+          else if size, boldness, or numbering suggests a heading:
+            classify as heading
+          else:
+            classify as paragraph
+
+          join it to the previous block only if type, spacing,
+          font size, indentation, and position look compatible
+          otherwise finish the previous block and start a new one
+
+        finish the last open text block on this page
+        append the page's blocks to outputBlocks
+
+      return Document(metadata, outputBlocks)</code></pre>
+        <p>“Remove text lines covered by a table/image” avoids returning the same visible content twice. Tables and images are inserted into the same ordered block stream as text, so the reader can walk the page in sequence. The actual code has more geometric checks; this is the decision outline.</p>
+        <h4>How the two-column guess works</h4>
+        <pre class="pseudocode"><code>if enough text lines sit on both sides of the page midpoint:
+      mark lines spanning across the midpoint as possible separators
+      split the page into vertical bands at those separators
+      within each band, read the left column, then the right column
+      keep separator lines in their vertical position
+    else:
+      sort items from top to bottom, then left to right</code></pre>
+        <p>This is a geometric guess, not a semantic understanding of the page. Sidebars, marginal notes, tables, and unusual layouts can still be interleaved incorrectly. The reliable way to review it is to compare the ordered block text with the page itself.</p>
+
+        <h3>High-scoring paragraph messages and the Q&amp;A goal</h3>
+        <p>The eligible response's <code>importance.passages</code> array contains only paragraph blocks whose internally calculated importance score is strictly greater than <code>0.7</code>, ordered from highest score to lowest. The score is not included in the response. Each returned passage contains its source <code>block_id</code>, full paragraph text in <code>message</code>, and detected <code>signals</code>. The cutoff is a starting default, not a validated measure of educational value; tune it against labeled examples from your books.</p>
+        <p>The internal score combines normalized centrality with a 0.30 boost for a definition-like phrase and a 0.15 boost for a paragraph immediately after a heading, capped at 1.0. Signals describe which cues fired. The service returns qualifying paragraphs individually; it does not merge neighboring paragraphs into larger passages.</p>
+        <div class="callout warning"><strong>Important for your feature:</strong> the cutoff filters paragraphs, but it does not prove they are useful for Q&amp;A. Measure missed and irrelevant passages on real examples before relying on the default. The chunk-size range above remains a separate downstream starting point if you later combine paragraphs.</div>
+        <p><strong>Recommended next step:</strong> label useful and unhelpful paragraphs in representative books, compare them with the selected output, and adjust <code>MIN_IMPORTANCE_SCORE</code> based on missed and irrelevant results. Keep selection separate from PDF parsing so you can tune it without changing extraction.</p>
+        <p class="section-kicker">Language-neutral pseudocode · current importance response</p>
+        <pre class="pseudocode"><code>for each Paragraph block in document:
+      score = min(1.0, 0.7 * centrality + definition_boost + position_boost)
+      if score <= 0.7: skip this paragraph
+      message = the paragraph's full text
+      signals = []
+      add centrality signal
+      if text matches a definition phrase: add definitional signal
+      if paragraph immediately follows a heading: add positional signal
+      emit paragraph block ID, message, and signal names
+      do not include the numeric score in the response</code></pre>
+      </section>
+
+      <section id="contracts">
+        <div class="section-kicker">05 · Data contracts</div>
+        <h2>The data contract, without the jargon</h2>
+        <p>A “data contract” is the agreed shape of data passed between parts of the system: field names, value types, and rules that must hold. It lets the extractor, API, and later features agree on what they receive. It is not a separate service or a cache.</p>
+        <p><strong>In this code, <code>Document</code> is the Python/Pydantic model for one PDF extraction result.</strong> It contains file metadata and an ordered list of blocks. A block is one extracted item: a heading, paragraph, table, image, or code/formula. Each block gets an ID so another result can point back to that exact source item. For example, an importance result can say “this message comes from block <code>abc123</code>.”</p>
+        <pre><code>One PDF
+  Document
+    meta: filename, page count, title
+    blocks:
+      [block id, page, type, content]
+      [block id, page, type, content]
+  importance:
+    [paragraph block id, message text, signals]</code></pre>
+      <p class="section-kicker">Language-neutral pseudocode · following a block reference</p>
+      <pre class="pseudocode"><code>for each importance result:
+    find the Document block whose id equals result.block_id
+    use that block's paragraph text as the source passage
+    keep the message and signal names beside it
+
+  The importance result points to the text; it does not copy or replace it.</code></pre>
+      <p><strong>“Document population” means the collection/type of input PDFs this service is intended to handle</strong>, not a Python class or group of data records. The goal is born-digital PDFs with extractable text, particularly books and papers whose content can be read in sequence. Mostly scanned PDFs are rejected, including scans with an OCR text layer. Font or layout complexity alone is not out of scope.</p>
+        <p>The model file currently mixes schemas used by this service with schemas sketched for possible later stages. You do not need those future models to understand today’s endpoint.</p>
+        <table>
+          <thead><tr><th>Model family</th><th>Role in the intended pipeline</th><th>Implemented here?</th></tr></thead>
+          <tbody>
+            <tr><td><code>Document</code> / <code>Block</code></td><td>Extracted content and its metadata.</td><td>Yes; emitted by the endpoint.</td></tr>
+            <tr><td><code>EligibilityResult</code></td><td>Reasons a PDF is outside the supported input scope.</td><td>Yes; used before extraction.</td></tr>
+            <tr><td><code>DocumentImportance</code></td><td>Selected high-scoring paragraph messages and signals referencing block IDs.</td><td>Yes; emitted for eligible documents.</td></tr>
+            <tr><td><code>Section</code> / <code>SegmentedDocument</code></td><td>Future chapter/front/back-matter references into the document.</td><td>Schema only.</td></tr>
+            <tr><td><code>Blob</code></td><td>Future batches of block IDs with explicit boundaries.</td><td>Schema only.</td></tr>
+            <tr><td><code>ProcessedPiece</code> / <code>ProcessedChapter</code></td><td>Future transformed text plus processing status.</td><td>Schema only; no LLM or transform code here.</td></tr>
+          </tbody>
+        </table>
+        <div class="callout decision"><strong>Recommendation for your one-shot workflow:</strong> if a book is uploaded, processed, sent to the next feature, and then discarded, you do not need a cache system or frozen Python objects just for caching. Keep one <code>Document</code> as the source of truth while that request is being processed; have importance/passage results refer to its block IDs. Avoid changing extracted block content after creating those results, because their IDs point to the original blocks. When the request ends, discard the in-memory objects. Persist only if the product later needs saved books, retry/resume, or repeat Q&amp;A without re-uploading.</div>
+        <p><code>extraction_version</code> is still useful as provenance (“which extraction logic made this?”), even without caching, but it does not by itself create a cache. Keep it if downstream logs or results need that traceability. The many <code>Section</code>, <code>Blob</code>, and processed-piece models are not used by this service today; to make the design easier to work with, consider moving these future-only schemas out of the active extraction contract until a real stage needs them.</p>
+        <p>Validation currently enforces unique block IDs within a document, non-decreasing page order, non-empty future sections/blobs/pieces, non-empty formula assets, and consistency between eligibility and rejection reasons. You can think of these as guardrails on the data shape. Additional cross-checks, such as whether referenced block IDs actually exist, are only needed if those future reference-based stages are implemented.</p>
+      </section>
+
+      <section id="trust">
+        <div class="section-kicker">06 · Reliability boundaries</div>
+        <h2>What confidence should mean here</h2>
+        <p>Eligibility requires at least one page with non-whitespace extractable text and rejects documents when at least half their pages contain images covering 70% or more of page area. This scan check is heuristic: partial-page scans can pass, and a born-digital document dominated by full-page images can be rejected. It does not prove that all text was found. The extractor separately uses layout heuristics to order content, so sequence quality must be measured on representative documents rather than inferred from an eligible response.</p>
+        <div class="risk">
+          <h3><span class="tag">Heuristic</span>Importance cutoff needs evaluation</h3>
+          <p>The current implementation returns only paragraphs with scores above <code>0.7</code>, but that default has not been calibrated against human-labeled examples. The numeric score stays internal; the response includes only passage text, source IDs, and signals. Adjust the cutoff using missed and irrelevant passage rates from representative books.</p>
+        </div>
+        <div class="risk">
+          <h3><span class="tag">Behavior gap</span>Selected paragraphs are not grouped</h3>
+          <p>The threshold filters individual paragraphs, but neighboring selected paragraphs are not combined and the current signals do not establish that a passage answers a question. Add and evaluate passage grouping separately if downstream Q&amp;A needs larger coherent units.</p>
+        </div>
+        <div class="risk">
+          <h3><span class="tag">Coverage gap</span>Tests validate one fixture more than the service boundary</h3>
+          <p>Current tests cover fixture extraction, scanned-PDF rejection, acceptance of text with varied fonts/vector drawing, block page ordering, base64 image assets, JSON round-trip, and a small importance case. They do not yet prove complete text recovery or correct within-page sequence for multi-column and visually complex documents, nor do they exercise FastAPI responses, file limits, or latency/memory limits.</p>
+        </div>
+        <div class="risk">
+          <h3><span class="tag">Operational</span>CPU, memory, and response size depend on document content</h3>
+          <p>The route uses a synchronous handler for CPU-bound PyMuPDF work, and upload size is capped. However, rendered image/formula crops are embedded as base64 in JSON; an 80 MiB input limit does not cap output size or extraction time. Base64 also makes each binary image larger in the JSON response.</p>
+          <p><strong>Practical fix:</strong> first measure representative books. Add limits for page count, individual/total rendered asset pixels or bytes, and total response size; return a clear “too large/unsupported” result when exceeded. Record per-stage time, peak memory, input bytes, page count, and output bytes. Set worker concurrency based on those measurements. If jobs are too slow for a normal request, then move processing to a bounded job queue; do not add a queue before latency evidence calls for it.</p>
+        </div>
+        <div class="risk">
+          <h3><span class="tag">Operational</span>Parser resources and errors need clear boundaries</h3>
+          <p>The route opens a PDF for eligibility and the extractor opens it again; the code does not explicitly close these PyMuPDF document handles. Also, unexpected eligibility or importance-result failures sit outside the extraction-specific error handler.</p>
+          <p><strong>Practical fix:</strong> close each parser deterministically (for example, with a context manager or <code>finally</code>), handle errors at the request boundary, log the failing phase with a request ID, and return a generic client-safe 500 message rather than exception internals. Keep the detailed exception in server logs.</p>
+        </div>
+        <div class="risk">
+          <h3><span class="tag">Operational</span>Health status is only a liveness check</h3>
+          <p><code>/health</code> returns “ok” without checking whether the service can open a PDF or has capacity. That is adequate as a basic liveness endpoint, but it does not prove extraction readiness.</p>
+          <p><strong>Practical fix:</strong> keep liveness cheap. Add a separate readiness check only if deployment needs one, and make it check minimum real dependency state without parsing a large document on every probe.</p>
+        </div>
+        <div class="risk">
+          <h3><span class="tag">Boundary</span>Some work is outside the route's extraction error handler</h3>
+          <p>Eligibility runs before the extraction <code>try</code>; importance-result generation runs after it. Unexpected exceptions in either phase are not converted by the route's explicit error handling into its documented extraction-specific HTTP 500 path. Decide whether generic server errors are acceptable and whether logs/metrics need phase context.</p>
+        </div>
+      </section>
+
+      <section id="decisions">
+        <div class="section-kicker">07 · Decision register</div>
+        <h2>Questions to settle before depending on it</h2>
+        <table>
+          <thead><tr><th>Decision</th><th>Why it matters</th><th>Evidence that would resolve it</th></tr></thead>
+          <tbody>
+            <tr><td>Which PDFs are in the supported population?</td><td>This means the kinds of real books/papers the service should accept, not a code object.</td><td>A representative set of PDFs with expected accept/reject decisions and extraction examples.</td></tr>
+            <tr><td>What counts as useful for Q&amp;A?</td><td>The current messages and signals are not a passage selector or a measure of answer quality.</td><td>A short annotation guide and human-labeled examples of useful and unhelpful passages.</td></tr>
+            <tr><td>Should the service persist books?</td><td>Persistence adds storage, privacy, deletion, and retry obligations to a currently stateless service.</td><td>Only add persistence if users need saved books, resumable jobs, or repeat Q&amp;A without uploading again.</td></tr>
+            <tr><td>What resource limits fit real books?</td><td>Upload bytes alone do not constrain rendered images, CPU time, or response size.</td><td>Measure representative long and image-heavy PDFs, then set explicit budgets.</td></tr>
+          </tbody>
+        </table>
+        <p>The simplest direction consistent with your stated goal is: process each upload in one request, keep extracted blocks stable for that request, select Q&amp;A passages as a separate result, and discard the in-memory book afterward. Add persistence or immutable models only when a concrete product requirement justifies them.</p>
+      </section>
+
+      <section id="review">
+        <div class="section-kicker">08 · A practical review method</div>
+        <h2>Review the code in the order behavior happens</h2>
+        <ol>
+          <li><strong>Set the boundary.</strong> Read the README and requirements first. Write down supported PDFs, explicit non-goals, response shape, runtime version, and dependency/licensing constraints. Separate stated intent from verified implementation.</li>
+          <li><strong>Trace one request.</strong> Start in <code>main.py</code>. Follow an upload through validation, eligibility, extraction, importance-message generation, response serialization, and each HTTP failure path. Note where exceptions are caught and what resources are held.</li>
+          <li><strong>Understand the contract before the heuristics.</strong> Read the block union and validators in <code>document_model.py</code>. For every produced field, ask who consumes it, what invariant is enforced, and whether version/ID references can become stale.</li>
+          <li><strong>Follow the data shape through extraction.</strong> In <code>extractor.py</code>, track a page from PDF spans to line records to ordered items to typed blocks. Inspect each classifier and merge rule against examples; distinguish coordinate evidence from assumptions about reading order.</li>
+          <li><strong>Audit the text check, then audit sequence separately.</strong> Confirm that any extracted non-whitespace text on any page passes. Then inspect emitted block order against the PDF on single-column, multi-column, and mixed-layout examples; do not treat layout complexity itself as a reason to reject.</li>
+          <li><strong>Check claims against operations.</strong> Compare docstrings, README, response models, and actual calculations. This catches the response-field mismatch, mutable-versus-immutable contract, and TF-IDF-versus-term-frequency discrepancy found in this pass.</li>
+          <li><strong>Map tests to risks.</strong> Identify which requirement each test proves, then list untested behavior. Prefer a small test that fails for the suspected defect: API contract test, model mutation test, caption boundary test, or message/signal output test.</li>
+          <li><strong>Make one change and re-run the narrow check.</strong> Preserve the fixture baseline, add a regression case for the behavior being changed, then run the full suite and a representative request. For heuristic edits, compare block sequence/content and acceptance decisions, not just absence of exceptions.</li>
+          <li><strong>Decide with production evidence.</strong> Before changing thresholds or claiming extraction quality, evaluate against a labeled corpus and profile realistic files. Track acceptance/rejection, block-level accuracy, response bytes, latency, and failures by document type.</li>
+        </ol>
+        <h3>Review questions for every proposed change</h3>
+        <ul class="checklist">
+          <li>Does this change affect the public response or only an internal heuristic?</li>
+          <li>Could it change block IDs, ordering, page attribution, asset output, or which passages reach Q&amp;A?</li>
+          <li>What is the concrete wrong result today, and what test reproduces it?</li>
+          <li>Which supported document examples improve, and which may regress?</li>
+          <li>Does the change alter rejection behavior, response size, CPU, memory, or worker concurrency?</li>
+          <li>Are docs, schema, implementation, and downstream assumptions still consistent?</li>
+          <li>What result would make us revert or revise this decision?</li>
+        </ul>
+      </section>
+
+      <section id="verification">
+        <div class="section-kicker">09 · Verification and operations</div>
+        <h2>Reproduce and extend the current checks</h2>
+        <p>The extractor test module was run in this workspace with Python 3.12 and the repository root on <code>PYTHONPATH</code>; all 14 tests passed. Run the commands below after installing the pinned requirements in a fresh environment.</p>
+        <pre><code>pip install -r requirements.txt pytest
+PYTHONPATH=. pytest tests/ -v
+
+uvicorn app.main:app --reload
+# GET http://127.0.0.1:8000/health
+# POST http://127.0.0.1:8000/extract with multipart field "file"</code></pre>
+        <p>The container uses Python 3.11 slim, installs pinned requirements, copies only <code>app/</code>, and launches Uvicorn on port 8000. Tests and fixtures are not copied into the runtime image.</p>
+        <h3>Useful next tests</h3>
+        <ul>
+          <li>HTTP contract tests for eligible, ineligible, invalid, encrypted, empty, and over-limit uploads.</li>
+          <li>Eligibility tests for empty, short-text, and mixed scanned/text PDFs, plus reading-sequence tests for multi-column and visually complex pages.</li>
+          <li>Passage-selection tests that check selected text, source block references, heading context, false inclusions, and missed answer-bearing passages.</li>
+          <li>Golden or property-based extraction tests for two-column reading order, sparse tables, captions, hyphenated line breaks, and image-heavy pages.</li>
+          <li>Resource tests that record peak memory, elapsed time, and response size for long and image-heavy documents.</li>
+        </ul>
+        <p class="footer">Prepared from the repository files present in this workspace. This is an engineering orientation document, not a guarantee of extraction accuracy or a substitute for validating the target corpus.</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

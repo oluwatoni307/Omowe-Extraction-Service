@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: omowe-pdf-extraction-service
+    runtime: docker
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      - key: WORKERS
+        value: "2"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+

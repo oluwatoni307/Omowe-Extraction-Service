@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Tests
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Python cache & virtualenvs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# IDE & Editor files
+.vscode/
+.idea/
+
+# Local docs & guides
+*.md
+SYSTEM_GUIDE.html
+.DS_Store
+
