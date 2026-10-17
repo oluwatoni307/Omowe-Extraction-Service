@@ -148,6 +148,20 @@ def _body_stats(all_lines):
                 dl = b["bbox"][1] - a["bbox"][1]
                 if 0.8 * body < dl < 3 * body:
                     deltas.append(dl)
+    if not deltas:
+        by_page = defaultdict(list)
+        for l in all_lines:
+            if abs(l["size"] - body) < 0.6 and not l.get("mono") and not l.get("math"):
+                by_page[l["page"]].append(l)
+        for ls in by_page.values():
+            ls.sort(key=lambda l: l["bbox"][1])
+            for a, b in zip(ls, ls[1:]):
+                overlap = min(a["bbox"][2], b["bbox"][2]) - max(a["bbox"][0], b["bbox"][0])
+                min_w = min(a["bbox"][2] - a["bbox"][0], b["bbox"][2] - b["bbox"][0])
+                if min_w > 0 and (overlap / min_w) > 0.4:
+                    dl = b["bbox"][1] - a["bbox"][1]
+                    if 0.8 * body < dl < 3 * body:
+                        deltas.append(dl)
     pitch = statistics.median(deltas) if deltas else 1.25 * body
     tot = sum(len(l["text"]) for l in all_lines) or 1
     mono_frac = sum(len(l["text"]) for l in all_lines if l["mono"]) / tot
