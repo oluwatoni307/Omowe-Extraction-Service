@@ -339,3 +339,72 @@ def test_positional_signal_survives_intervening_image_under_heading(monkeypatch)
     assert len(importance.passages) == 1
     assert ImportanceSignal.POSITIONAL in importance.passages[0].signals
 
+
+def test_citation_line_never_classified_as_heading():
+    from app.extractor import _is_heading
+
+    citation_line = {"text": "0000000000000303 PMID: 28002106", "size": 14.0, "bold": True}
+    assert _is_heading(citation_line, body=10.0) is False
+
+    doi_line = {"text": "https://doi.org/10.3390/metabo5020389 PMID: 26090945", "size": 14.0, "bold": True}
+    assert _is_heading(doi_line, body=10.0) is False
+
+    arxiv_line = {"text": "arXiv:1706.03762v5 [cs.CL] 6 Dec 2017", "size": 14.0, "bold": True}
+    assert _is_heading(arxiv_line, body=10.0) is False
+
+    bracket_ref = {"text": "[1] A. Vaswani et al., Attention is all you need", "size": 14.0, "bold": True}
+    assert _is_heading(bracket_ref, body=10.0) is False
+
+    volume_ref = {"text": "Vol. 45, No. 2, pp. 120-135", "size": 14.0, "bold": True}
+    assert _is_heading(volume_ref, body=10.0) is False
+
+    valid_heading = {"text": "1. Introduction", "size": 14.0, "bold": True}
+    assert _is_heading(valid_heading, body=10.0) is True
+
+
+def test_score_document_extracts_real_concepts_and_rejects_pronouns():
+    from app.document_model import DocumentMeta
+    from app.importance import score_document
+
+    doc = Document(
+        extraction_version="test",
+        meta=DocumentMeta(source_filename="test.pdf", page_count=1),
+        blocks=[
+            HeadingBlock(page=1, text="2. Background"),
+            ParagraphBlock(
+                page=1,
+                text="This is defined as the baseline for sequential transduction models.",
+            ),
+            HeadingBlock(page=1, text="3. Related Work"),
+            ParagraphBlock(
+                page=1,
+                text="It is also known as recurrent neural language modeling in many contexts.",
+            ),
+            HeadingBlock(page=1, text="Key Mechanisms"),
+            ParagraphBlock(
+                page=1,
+                text="Self-attention is defined as an attention mechanism relating different positions of a single sequence.",
+            ),
+        ],
+    )
+    importance = score_document(doc)
+    terms = [c.term.lower() for c in importance.concepts]
+    assert "this" not in terms
+    assert "it" not in terms
+    assert "background" not in terms
+    assert "related work" not in terms
+    assert "self-attention" in terms
+
+
+def test_short_document_furniture_detection():
+    from app.extractor import _find_furniture
+
+    # 1-page doc with a page number at the bottom margin
+    p1_lines = [
+        {"bbox": (72, 750, 500, 762), "text": "1"},  # page number in footer
+        {"bbox": (72, 100, 500, 112), "text": "Genuine body text on single page."},
+    ]
+    sigs, _ = _find_furniture([p1_lines], [(612, 792)], npages=1)
+    assert any("#" in k[0] for k in sigs)
+
+

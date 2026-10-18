@@ -17,8 +17,10 @@ from __future__ import annotations
 import base64
 import re
 import statistics
+import uuid
 from collections import Counter, defaultdict
 from io import BytesIO
+from typing import Callable
 
 import pymupdf as fitz
 
@@ -168,12 +170,23 @@ def _body_stats(all_lines):
     return body, pitch, mono_frac
 
 
+_CITATION_LINE = re.compile(
+    r"\b(?:PMID:\s*\d+|doi:\s*10\.\d+|https?://|arXiv:\s*\S+"
+    r"|pp?\.\s*\d+[-–]\d+|vol(?:ume)?\.?\s*\d+|no\.\s*\d+|issn|isbn)\b"
+    r"|^\[\d+\]"
+    r"|^\(\d{4}\)",
+    re.I,
+)
+
+
 def _find_furniture(pages_lines, sizes, npages):
-    if npages < 3:
+    if npages < 1:
         return set(), set()
     sig = Counter()
+    margin_y_counts = Counter()
     for lines, (W, H) in zip(pages_lines, sizes):
         seen = set()
+        seen_y = set()
         for l in lines:
             y0, y1 = l["bbox"][1], l["bbox"][3]
             if (y0 < 0.09 * H or y1 > 0.91 * H) and len(l["text"]) < 120:
@@ -181,20 +194,29 @@ def _find_furniture(pages_lines, sizes, npages):
                 if k not in seen:
                     seen.add(k)
                     sig[k] += 1
-    min_rep = 2 if npages >= 4 else 3
+                yb = round(y0 / 6)
+                if yb not in seen_y:
+                    seen_y.add(yb)
+                    margin_y_counts[yb] += 1
+
+    if npages == 1:
+        # On 1-page docs, only treat explicit page number markers in margins as furniture
+        repeated_sigs = {
+            k for k, v in sig.items()
+            if re.match(r"^(?:#|page\s+#|#\s+of\s+#)$", k[0].strip())
+        }
+        return repeated_sigs, set()
+
+    min_rep = 2 if npages <= 5 else max(2, int(0.25 * npages))
     repeated_sigs = {k for k, v in sig.items() if v >= min_rep}
-    rep_by_y = Counter()
-    for (_, yb), v in sig.items():
-        if v >= min_rep:
-            rep_by_y[yb] += v
-    thr = max(3, int(0.3 * npages))
-    furniture_y = {yb for yb, cnt in rep_by_y.items() if cnt >= thr}
+    thr = max(2, int(0.25 * npages))
+    furniture_y = {yb for yb, cnt in margin_y_counts.items() if cnt >= thr}
     return repeated_sigs, furniture_y
 
 
 def _is_heading(l, body):
     t, n = l["text"], len(l["text"])
-    if n < 2 or n > 110 or NOISE_LINE.match(t):
+    if n < 2 or n > 110 or NOISE_LINE.match(t) or _CITATION_LINE.search(t):
         return False
     diff = abs(l["size"] - body) / body >= 0.10
     if l["size"] >= body * 1.15:
@@ -277,6 +299,13 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
     lines = keep
 
     raw_items: list[dict] = []
+    asset_collector = ctx.get("asset_collector")
+
+    def _crop_asset(pix: fitz.Pixmap) -> str:
+        if asset_collector:
+            asset_id = uuid.uuid4().hex[:12]
+            return asset_collector(asset_id, pix.tobytes("png"))
+        return _png_data_uri(pix)
 
     def absorb(rect, frac=0.6):
         nonlocal lines
@@ -323,7 +352,7 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
             continue
         pix = page.get_pixmap(clip=fitz.Rect(*bb), dpi=150)
         absorb(bb, 0.8)
-        raw_items.append(dict(kind="image", bbox=bb, asset=_png_data_uri(pix),
+        raw_items.append(dict(kind="image", bbox=bb, asset=_crop_asset(pix),
                               caption=find_caption(bb, FIG_CAP)))
 
     if hasattr(page, "cluster_drawings"):
@@ -347,7 +376,7 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
                 continue
             pix = page.get_pixmap(clip=fitz.Rect(*bb), dpi=150)
             absorb(bb, 0.8)
-            raw_items.append(dict(kind="image", bbox=bb, asset=_png_data_uri(pix),
+            raw_items.append(dict(kind="image", bbox=bb, asset=_crop_asset(pix),
                                   caption=find_caption(bb, FIG_CAP)))
 
     for l in lines:
@@ -419,7 +448,7 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
             pix = page.get_pixmap(clip=fitz.Rect(*pad), dpi=150)
             blocks.append(CodeBlock(page=pno, kind=CodeKind.FORMULA,
                                     text=" ".join(l["text"] for l in ls),
-                                    asset_url=_png_data_uri(pix)))
+                                    asset_url=_crop_asset(pix)))
         else:
             text = ls[0]["text"]
             for l in ls[1:]:
@@ -446,7 +475,12 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
     return blocks
 
 
-def _extract_from_fitz(doc: fitz.Document, source_filename: str) -> Document:
+def _extract_from_fitz(
+    doc: fitz.Document,
+    source_filename: str,
+    document_id: str | None = None,
+    asset_collector: Callable[[str, bytes], str] | None = None,
+) -> Document:
     pages = list(range(len(doc)))
 
     raw, sizes = {}, []
@@ -463,6 +497,7 @@ def _extract_from_fitz(doc: fitz.Document, source_filename: str) -> Document:
         mono_doc=mono_frac > 0.6,
         furniture=furniture,
         furniture_y=furniture_y,
+        asset_collector=asset_collector,
     )
 
     blocks: list[Block] = []
@@ -476,14 +511,32 @@ def _extract_from_fitz(doc: fitz.Document, source_filename: str) -> Document:
         page_count=len(doc),
         body_font_size=body,
     )
-    return Document(extraction_version=EXTRACTION_VERSION, meta=meta, blocks=blocks)
+    doc_kwargs = dict(extraction_version=EXTRACTION_VERSION, meta=meta, blocks=blocks)
+    if document_id:
+        doc_kwargs["document_id"] = document_id
+    return Document(**doc_kwargs)
 
 
-def extract_document(pdf: bytes | fitz.Document, source_filename: str) -> Document:
+def extract_document(
+    pdf: bytes | fitz.Document,
+    source_filename: str,
+    document_id: str | None = None,
+    asset_collector: Callable[[str, bytes], str] | None = None,
+) -> Document:
     """Run heuristic extraction over an already-eligible PDF and return a
     validated Document. Caller is responsible for having already checked
     eligibility.check_eligibility() — this function does not re-check."""
     if isinstance(pdf, fitz.Document):
-        return _extract_from_fitz(pdf, source_filename)
+        return _extract_from_fitz(
+            pdf,
+            source_filename,
+            document_id=document_id,
+            asset_collector=asset_collector,
+        )
     with fitz.open(stream=pdf, filetype="pdf") as doc:
-        return _extract_from_fitz(doc, source_filename)
+        return _extract_from_fitz(
+            doc,
+            source_filename,
+            document_id=document_id,
+            asset_collector=asset_collector,
+        )

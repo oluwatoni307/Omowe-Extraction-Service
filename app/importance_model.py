@@ -26,7 +26,13 @@ class ImportantPassage(BaseModel):
     signals: list[ImportanceSignal] = Field(default_factory=list)
 
 
+class Concept(BaseModel):
+    term: str
+    definition: str
+
+
 class DocumentImportance(BaseModel):
     document_id: str
     extraction_version: str          # same staleness contract as everything else
     passages: list[ImportantPassage]
+    concepts: list[Concept] = Field(default_factory=list)

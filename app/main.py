@@ -13,9 +13,15 @@ this service holds nothing between requests. See README.md.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import tempfile
+import time
+import uuid
+from pathlib import Path
 
 import pymupdf as fitz
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -62,6 +68,91 @@ def health():
     return {"status": "ok"}
 
 
+ASSET_DIR = Path(tempfile.gettempdir()) / "omowe_assets"
+ASSET_DIR.mkdir(parents=True, exist_ok=True)
+MAX_CACHE_BYTES = 100 * 1024 * 1024  # 100 MB max disk cache
+ASSET_TTL_SECONDS = 3600  # 1 hour TTL
+
+
+def _evict_old_assets() -> None:
+    """Evicts asset directories older than ASSET_TTL_SECONDS or if cache exceeds MAX_CACHE_BYTES."""
+    if not ASSET_DIR.exists():
+        return
+    now = time.time()
+    try:
+        doc_dirs = [d for d in ASSET_DIR.iterdir() if d.is_dir()]
+        total_bytes = 0
+        dir_stats = []
+
+        for d in doc_dirs:
+            png_files = list(d.glob("*.png"))
+            d_size = sum(f.stat().st_size for f in png_files if f.is_file())
+            mtime = d.stat().st_mtime
+            # Evict if older than TTL
+            if now - mtime > ASSET_TTL_SECONDS:
+                shutil.rmtree(d, ignore_errors=True)
+            else:
+                total_bytes += d_size
+                dir_stats.append((mtime, d_size, d))
+
+        # If still over size budget, remove oldest directories
+        if total_bytes > MAX_CACHE_BYTES:
+            dir_stats.sort(key=lambda x: x[0])  # oldest first
+            for mtime, d_size, d in dir_stats:
+                shutil.rmtree(d, ignore_errors=True)
+                total_bytes -= d_size
+                if total_bytes <= MAX_CACHE_BYTES:
+                    break
+    except Exception as e:
+        logger.warning("Error during asset cache eviction: %s", e)
+
+
+def store_asset(doc_id: str, asset_id: str, data: bytes) -> str:
+    _evict_old_assets()
+    target_dir = ASSET_DIR / doc_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    file_path = target_dir / f"{asset_id}.png"
+    file_path.write_bytes(data)
+    return f"/assets/{doc_id}/{asset_id}"
+
+
+def get_asset(doc_id: str, asset_id: str) -> bytes | None:
+    file_path = ASSET_DIR / doc_id / f"{asset_id}.png"
+    if not file_path.is_file():
+        return None
+    # Check TTL
+    if time.time() - file_path.stat().st_mtime > ASSET_TTL_SECONDS:
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    try:
+        return file_path.read_bytes()
+    except OSError:
+        return None
+
+
+def clear_asset_cache() -> None:
+    if ASSET_DIR.exists():
+        for d in ASSET_DIR.iterdir():
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+            elif d.is_file():
+                try:
+                    d.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+@app.get("/assets/{doc_id}/{asset_id}")
+def get_asset_endpoint(doc_id: str, asset_id: str):
+    data = get_asset(doc_id, asset_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return Response(content=data, media_type="image/png")
+
+
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB upload limit
 
 
@@ -101,7 +192,17 @@ def extract(file: UploadFile = File(...)):
             return ExtractResponse(eligible=False, reasons=eligibility.reasons)
 
         try:
-            document = extract_document(fitz_doc, source_filename=file.filename or "unknown.pdf")
+            doc_id = uuid.uuid4().hex[:12]
+
+            def asset_collector(asset_id: str, png_bytes: bytes) -> str:
+                return store_asset(doc_id, asset_id, png_bytes)
+
+            document = extract_document(
+                fitz_doc,
+                source_filename=file.filename or "unknown.pdf",
+                document_id=doc_id,
+                asset_collector=asset_collector,
+            )
             importance = score_document(document)
         except Exception as e:
             logger.exception("extraction failed for %s", file.filename)

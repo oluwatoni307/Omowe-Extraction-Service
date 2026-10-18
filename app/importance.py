@@ -21,7 +21,7 @@ import re
 from collections import Counter
 
 from app.document_model import Block, Document, HeadingBlock, ParagraphBlock
-from app.importance_model import DocumentImportance, ImportantPassage, ImportanceSignal
+from app.importance_model import Concept, DocumentImportance, ImportantPassage, ImportanceSignal
 
 MIN_IMPORTANCE_SCORE = 0.7
 WINDOW = 40          # only compare a paragraph's TF-IDF vector against
@@ -153,6 +153,99 @@ def _positional_ids(blocks: list[Block]) -> set[str]:
     return ids
 
 
+_DEF_SPLIT = re.compile(
+    r"\b(?:is|are|was|were)\s+(?:also\s+)?(?:defined as|known as|referred to as|called|a term for)\s+",
+    re.I,
+)
+
+
+_PRONOUNS_AND_NOISE = frozenset("""
+this that these those it its they them their which what who whom where when why
+how here there we our you he she his her such another one all both each every
+some any none
+""".split())
+
+_STRUCTURAL_HEADINGS = re.compile(
+    r"\b(introduction|conclusion|references|chapter|part|abstract|arxiv|author|google|"
+    r"university|copyright|permission|background|related\s+work|methodology|methods|"
+    r"materials\s+and\s+methods|experiments|experimental\s+setup|discussion|results|"
+    r"evaluation|overview|implementation\s+details|future\s+work|acknowledgements|"
+    r"acknowledgments|appendix|table|figure)\b",
+    re.I,
+)
+
+_PREFIX_NOISE = re.compile(
+    r"^(?:in\s+summary|in\s+addition|formally|specifically|moreover|furthermore|"
+    r"for\s+example|note\s+that|clearly|here|thus|hence|therefore|first|second|third),?\s*",
+    re.I,
+)
+
+
+def _clean_term_candidate(term_raw: str) -> str | None:
+    # Strip leading numbering like "1. ", "3.2 "
+    term = re.sub(r"^\d+(?:\.\d+)*\s*[:.\-–—]?\s*", "", term_raw.strip())
+    # Strip common discourse transition phrases
+    term = _PREFIX_NOISE.sub("", term).strip(" \t\n\"'•-–—*:,")
+    # Strip leading articles
+    term = re.sub(r"^(?:the|a|an)\s+", "", term, flags=re.I).strip()
+    if not term:
+        return None
+    words = term.split()
+    if not (1 <= len(words) <= 4 and len(term) < 40):
+        return None
+    # Reject pronouns / demonstratives
+    lower_words = [w.lower() for w in words]
+    if lower_words[0] in _PRONOUNS_AND_NOISE:
+        return None
+    # Must have at least one substantive word (len >= 3 and not in stopwords)
+    substantive = [w for w in lower_words if len(w) >= 3 and w not in STOPWORDS]
+    if not substantive:
+        return None
+    # Reject if it matches structural paper headings
+    if _STRUCTURAL_HEADINGS.search(term):
+        return None
+    return term
+
+
+def _extract_concepts(paragraphs: list[ParagraphBlock], blocks: list[Block], max_concepts: int = 8) -> list[Concept]:
+    concepts: list[Concept] = []
+    seen_terms: set[str] = set()
+
+    for p in paragraphs:
+        sentences = re.split(r"(?<=[.!?])\s+", p.text.strip())
+        for s in sentences:
+            match = _DEF_SPLIT.search(s)
+            if match:
+                term_part = s[:match.start()].strip(" \t\n\"'•-–—*")
+                def_part = s[match.end():].strip(" \t\n\"'").rstrip(".!?")
+                clean_term = _clean_term_candidate(term_part)
+                if clean_term and len(def_part) > 15:
+                    clean_def = def_part[0].upper() + def_part[1:] + "." if def_part else "Key concept."
+                    if clean_term.lower() not in seen_terms:
+                        seen_terms.add(clean_term.lower())
+                        concepts.append(Concept(term=clean_term, definition=clean_def))
+                        if len(concepts) >= max_concepts:
+                            return concepts
+
+    prev_heading = None
+    for b in blocks:
+        if isinstance(b, HeadingBlock):
+            prev_heading = b.text.strip()
+        elif isinstance(b, ParagraphBlock) and prev_heading:
+            clean_term = _clean_term_candidate(prev_heading)
+            def_words = b.text.strip().split()
+            if clean_term and len(def_words) >= 6 and clean_term.lower() not in seen_terms:
+                summary_sent = re.split(r"(?<=[.!?])\s+", b.text.strip())[0]
+                if len(summary_sent) > 25:
+                    seen_terms.add(clean_term.lower())
+                    concepts.append(Concept(term=clean_term, definition=summary_sent))
+                    if len(concepts) >= max_concepts:
+                        return concepts
+            prev_heading = None
+
+    return concepts
+
+
 def score_document(document: Document) -> DocumentImportance:
     paragraphs = [b for b in document.blocks if isinstance(b, ParagraphBlock)]
     centrality = _textrank(paragraphs)
@@ -182,9 +275,11 @@ def score_document(document: Document) -> DocumentImportance:
             selected.append((score, ImportantPassage(block_id=p.id, message=p.text, signals=signals)))
 
     selected.sort(key=lambda item: item[0], reverse=True)
+    concepts = _extract_concepts(paragraphs, document.blocks)
 
     return DocumentImportance(
         document_id=document.document_id,
         extraction_version=document.extraction_version,
         passages=[passage for _, passage in selected],
+        concepts=concepts,
     )
