@@ -313,7 +313,7 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
         lines = [l for l in lines if l not in inside]
         return inside
 
-    def find_caption(rect, pattern):
+    def find_caption(rect, pattern, consume=True):
         nonlocal lines
         for l in lines:
             if not pattern.match(l["text"]):
@@ -322,7 +322,8 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
             below = l["bbox"][1] - rect[3]
             horiz = min(rect[2], l["bbox"][2]) - max(rect[0], l["bbox"][0])
             if horiz > 0 and (-4 <= above <= 45 or -4 <= below <= 45):
-                lines = [x for x in lines if x is not l]
+                if consume:
+                    lines = [x for x in lines if x is not l]
                 return l["text"]
         return None
 
@@ -332,17 +333,31 @@ def _process_page(page, pno, lines, imgs, ctx) -> list[Block]:
     except Exception:
         found = []
     for t in found:
+        bbox = tuple(t.bbox)
+        # If there is a Figure caption nearby, this is a diagram / drawing, NOT a table!
+        if find_caption(bbox, FIG_CAP, consume=False):
+            continue
+
         rows = [[_clean(c) for c in r] for r in t.extract()]
         rows = [r for r in rows if any(r)]
         ncols = max((len(r) for r in rows), default=0)
-        cells = [c for r in rows for c in r]
-        if len(rows) < 2 or ncols < 2 or sum(1 for c in cells if c) < 0.3 * len(cells):
+        cells = [c for r in rows for c in r if c]
+        if len(rows) < 2 or ncols < 2 or len(cells) < 0.3 * (len(rows) * ncols):
             continue
-        bbox = tuple(t.bbox)
+
+        # If it doesn't have an explicit Table caption, reject if cell content distribution is pathological
+        # (e.g. one huge cell with sentences and questions, while other columns are empty)
+        table_cap = find_caption(bbox, TABLE_CAP, consume=False)
+        if not table_cap:
+            total_chars = sum(len(c) for c in cells)
+            max_cell_chars = max((len(c) for c in cells), default=0)
+            if total_chars > 0 and max_cell_chars / total_chars > 0.65 and len(cells) <= 4:
+                continue
+
         absorb(bbox, 0.5)
         table_boxes.append(bbox)
         raw_items.append(dict(kind="table", bbox=bbox, rows=rows,
-                              caption=find_caption(bbox, TABLE_CAP)))
+                              caption=find_caption(bbox, TABLE_CAP, consume=True)))
 
     for bb in imgs:
         w, h = bb[2] - bb[0], bb[3] - bb[1]
