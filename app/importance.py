@@ -45,10 +45,7 @@ _DEFINITIONAL = re.compile(
     r"|\bmeans\s+(that|doing|having|making)\b"
     r"|\bis\s+a\s+term\s+(for|used)\b"
     r"|\b(consists|composed|made\s+up)\s+of\b"
-    r"|\b(divided|classified|grouped|broken\s+down)\s+into\b"
-    r"|\bthe\s+(purpose|goal|role|definition|meaning|key|essence)\s+of\b"
-    r"|\b(in\s+other\s+words|as\s+opposed\s+to|in\s+contrast\s+to)\b"
-    r"|\bthere\s+are\s+(two|three|four|five|several)\s+(main|key|primary|major|different|basic|core)\b",
+    r"|\b(divided|classified|grouped|broken\s+down)\s+into\b",
     re.I,
 )
 
@@ -247,7 +244,10 @@ def _extract_concepts(paragraphs: list[ParagraphBlock], blocks: list[Block], max
 
 
 def score_document(document: Document) -> DocumentImportance:
-    paragraphs = [b for b in document.blocks if isinstance(b, ParagraphBlock)]
+    paragraphs = [
+        b for b in document.blocks
+        if isinstance(b, ParagraphBlock) and getattr(b, "role", "body") == "body"
+    ]
     centrality = _textrank(paragraphs)
     positional_ids = _positional_ids(document.blocks)
 

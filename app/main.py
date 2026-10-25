@@ -25,7 +25,7 @@ from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.document_model import Document, RejectionReason
+from app.document_model import Document, QualityReport, RejectionReason
 from app.eligibility import check_eligibility
 from app.extractor import extract_document
 from app.importance import score_document
@@ -34,12 +34,12 @@ from app.importance_model import DocumentImportance
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("extraction_service")
 
-app = FastAPI(title="PDF Extraction Service", version="1.0.0")
+app = FastAPI(title="PDF Extraction Service", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -49,6 +49,7 @@ class ExtractResponse(BaseModel):
     eligible: bool
     document: Document | None = None
     importance: DocumentImportance | None = None
+    quality: QualityReport | None = None
     reasons: list[RejectionReason] | None = None
 
 
@@ -209,4 +210,4 @@ def extract(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail=f"Extraction failed: {e}") from e
 
     logger.info("extracted %s: %d blocks", file.filename, len(document.blocks))
-    return ExtractResponse(eligible=True, document=document, importance=importance)
+    return ExtractResponse(eligible=True, document=document, importance=importance, quality=document.quality)

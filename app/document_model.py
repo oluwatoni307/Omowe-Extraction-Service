@@ -44,31 +44,52 @@ def _new_id() -> str:
 class BlockType(str, Enum):
     HEADING = "heading"
     PARAGRAPH = "paragraph"
+    REFERENCE = "reference"
     TABLE = "table"
     IMAGE = "image"
     CODE = "code"
 
 
+class BlockSource(str, Enum):
+    TEXT_LAYER = "text_layer"
+    GRID = "grid"
+    WORDS = "words"
+    RASTER = "raster"
+    VECTOR = "vector"
+
+
 class _BlockBase(BaseModel):
     id: str = Field(default_factory=_new_id)
     page: int = Field(ge=1)
+    bbox: tuple[float, float, float, float] | None = None
+    source: BlockSource | str | None = None
+    flags: list[str] = Field(default_factory=list)
 
 
 class HeadingBlock(_BlockBase):
     type: Literal[BlockType.HEADING] = BlockType.HEADING
     text: str
+    level: int = 1
 
 
 class ParagraphBlock(_BlockBase):
     type: Literal[BlockType.PARAGRAPH] = BlockType.PARAGRAPH
     text: str
+    role: Literal["body", "reference"] = "body"
+
+
+class ReferenceBlock(_BlockBase):
+    type: Literal[BlockType.REFERENCE] = BlockType.REFERENCE
+    text: str
 
 
 class TableBlock(_BlockBase):
     type: Literal[BlockType.TABLE] = BlockType.TABLE
-    rows: list[list[str]]
+    rows: list[list[str]] = Field(default_factory=list)
     header_rows: int = Field(default=1, ge=0)
     caption: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    raw_lines: list[str] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -76,24 +97,25 @@ class TableBlock(_BlockBase):
         # PyMuPDF's table.extract() returns None for empty cells, not "".
         # A missing cell is a legitimate sparse-table case, not malformed
         # input — normalize here so every producer doesn't have to remember.
-        if isinstance(data, dict) and "rows" in data:
+        if isinstance(data, dict) and "rows" in data and data["rows"] is not None:
             data = dict(data)
             data["rows"] = [["" if c is None else c for c in row] for row in data["rows"]]
         return data
 
     @model_validator(mode="after")
     def _shape_ok(self) -> "TableBlock":
-        if len(self.rows) < 1:
-            raise ValueError("table must have at least one row")
+        if len(self.rows) < 1 and not self.raw_lines:
+            raise ValueError("table must have at least one row or raw_lines")
         return self
 
 
 class ImageBlock(_BlockBase):
     type: Literal[BlockType.IMAGE] = BlockType.IMAGE
-    asset_url: str          # hosted URL — set once uploaded (Stage 3); may be
-                             # a local/temp path immediately after extraction
+    asset_url: str = ""     # hosted URL, local/temp path, or base64 data URI
     caption: str | None = None
     alt_text: str | None = None   # optional, filled later (accessibility pass)
+    panels: list[str] = Field(default_factory=list)
+    decorative: bool = False
 
 
 class CodeKind(str, Enum):
@@ -130,9 +152,27 @@ class CodeBlock(_BlockBase):
 # first; there's no `.text` on Table/Image that could be accidentally fed
 # to an LLM the way a stray dict field could.
 Block = Annotated[
-    Union[HeadingBlock, ParagraphBlock, TableBlock, ImageBlock, CodeBlock],
+    Union[HeadingBlock, ParagraphBlock, ReferenceBlock, TableBlock, ImageBlock, CodeBlock],
     Field(discriminator="type"),
 ]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# QUALITY REPORT (schema_version 2)
+# ══════════════════════════════════════════════════════════════════════
+
+class PageQuality(BaseModel):
+    page: int
+    rotation_applied: int = 0
+    word_parity: float = 1.0
+    numeric_parity: float = 1.0
+    flags: list[str] = Field(default_factory=list)
+
+
+class QualityReport(BaseModel):
+    overall_score: float = 1.0
+    pages: list[PageQuality] = Field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -150,13 +190,14 @@ class Document(BaseModel):
     """The full output of extraction. Immutable once produced — everything
     downstream (Section, Blob, ProcessedPiece) references block ids into
     this object, never copies block content out of it."""
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     extraction_version: str          # e.g. "pdf_to_blocks@2026-09-20-a1b2c3"
                                        # bump whenever extraction logic changes;
                                        # every cache downstream keys off this
     document_id: str = Field(default_factory=_new_id)
     meta: DocumentMeta
     blocks: list[Block]
+    quality: QualityReport | None = None
 
     @model_validator(mode="after")
     def _ids_unique_and_ordered_by_page(self) -> "Document":

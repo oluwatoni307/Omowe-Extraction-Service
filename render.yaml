@@ -7,7 +7,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: WORKERS
-        value: "2"
+        value: "1"
       - key: PYTHONUNBUFFERED
         value: "1"
 
