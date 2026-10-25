@@ -13,6 +13,7 @@ Key principles:
 from __future__ import annotations
 
 import base64
+import gc
 import re
 import statistics
 from collections import Counter, defaultdict
@@ -883,6 +884,7 @@ def _extract_from_fitz(
         if rot != 0:
             page.set_rotation((page.rotation + rot) % 360)
         matrices[p] = page.rotation_matrix
+        fitz.TOOLS.store_shrink(100)
 
     # Phase 2: Gather raw lines and doc vocabulary
     raw, sizes = {}, []
@@ -894,6 +896,7 @@ def _extract_from_fitz(
         for l in lines:
             for w in re.findall(r"\b[A-Za-z\-]{2,}\b", l["text"].lower()):
                 doc_vocab.add(w.replace("-", ""))
+        fitz.TOOLS.store_shrink(100)
 
     all_lines = [l for p in pages for l in raw[p][0]]
     body, pitch, mono_frac = _body_stats(all_lines)
@@ -919,6 +922,10 @@ def _extract_from_fitz(
         p_blocks, p_qual = _process_page(doc[p], p + 1, lines, imgs, ctx)
         blocks.extend(p_blocks)
         page_qualities.append(p_qual)
+        fitz.TOOLS.store_shrink(100)
+
+    fitz.TOOLS.store_shrink(100)
+    gc.collect()
 
     doc_flags = []
     if any(q.flags for q in page_qualities):

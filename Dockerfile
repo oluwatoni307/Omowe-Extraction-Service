@@ -22,4 +22,4 @@ USER appuser
 EXPOSE 8000
 
 # Pure Uvicorn with dynamic Render/Cloud port binding
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-2}"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-1}"]
