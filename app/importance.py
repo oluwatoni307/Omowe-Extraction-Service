@@ -162,12 +162,17 @@ how here there we our you he she his her such another one all both each every
 some any none
 """.split())
 
+_VERB_AND_REL_PRONOUNS = frozenset("""
+is are was were has have had do did does can could will would should may might
+what which that who whom whose where when why how been being
+""".split())
+
 _STRUCTURAL_HEADINGS = re.compile(
     r"\b(introduction|conclusion|references|chapter|part|abstract|arxiv|author|google|"
     r"university|copyright|permission|background|related\s+work|methodology|methods|"
     r"materials\s+and\s+methods|experiments|experimental\s+setup|discussion|results|"
     r"evaluation|overview|implementation\s+details|future\s+work|acknowledgements|"
-    r"acknowledgments|appendix|table|figure)\b",
+    r"acknowledgments|appendix|table|figure|prologue|epilogue|introductory\s+note)\b",
     re.I,
 )
 
@@ -193,6 +198,9 @@ def _clean_term_candidate(term_raw: str) -> str | None:
     # Reject pronouns / demonstratives
     lower_words = [w.lower() for w in words]
     if lower_words[0] in _PRONOUNS_AND_NOISE:
+        return None
+    # Reject if candidate contains verbs or relative pronouns (e.g. "guns were what")
+    if any(w in _VERB_AND_REL_PRONOUNS for w in lower_words):
         return None
     # Must have at least one substantive word (len >= 3 and not in stopwords)
     substantive = [w for w in lower_words if len(w) >= 3 and w not in STOPWORDS]

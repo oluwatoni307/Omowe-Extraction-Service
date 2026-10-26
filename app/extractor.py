@@ -47,6 +47,7 @@ NOISE_LINE = re.compile(r"^[\d\s/.\-–—•]+$")
 PAGE_NUM = re.compile(r"^(page\s*)?\d{1,4}(\s*/\s*\d{1,4})?$", re.I)
 
 # Broadened caption grammar accepting A1, S2, Roman numerals, Exhibits, Charts
+SCENE_BREAK = re.compile(r"^[\s\*\-\–—•#~=_+]{3,}$|^([A-Za-z\s])\1{4,}$")
 TABLE_CAP = re.compile(
     r"^(?:table|tab\.|exhibit|chart)\s+(?:[A-Za-z]?\d+|[IVXLCDMivxlcdm]+|[A-Za-z])(?:\b|[:\.\-\s])",
     re.I,
@@ -236,9 +237,8 @@ def _find_furniture(pages_lines, sizes, npages):
     if npages < 1:
         return set(), set()
     sig = Counter()
-    margin_y_counts = Counter()
     for lines, (W, H) in zip(pages_lines, sizes):
-        seen, seen_y = set(), set()
+        seen = set()
         for l in lines:
             y0, y1 = l["bbox"][1], l["bbox"][3]
             if (y0 < 0.09 * H or y1 > 0.91 * H) and len(l["text"]) < 120:
@@ -246,10 +246,6 @@ def _find_furniture(pages_lines, sizes, npages):
                 if k not in seen:
                     seen.add(k)
                     sig[k] += 1
-                yb = round(y0 / 6)
-                if yb not in seen_y:
-                    seen_y.add(yb)
-                    margin_y_counts[yb] += 1
 
     if npages == 1:
         repeated_sigs = {
@@ -260,16 +256,14 @@ def _find_furniture(pages_lines, sizes, npages):
 
     min_rep = 2 if npages <= 5 else max(2, int(0.25 * npages))
     repeated_sigs = {k for k, v in sig.items() if v >= min_rep}
-    thr = max(2, int(0.25 * npages))
-    furniture_y = {yb for yb, cnt in margin_y_counts.items() if cnt >= thr}
-    return repeated_sigs, furniture_y
+    return repeated_sigs, set()
 
 
 def _is_heading(l, body, in_references=False):
     if in_references:
         return False
     t, n = l["text"], len(l["text"])
-    if n < 2 or n > 110 or NOISE_LINE.match(t) or _CITATION_LINE.search(t):
+    if n < 2 or n > 110 or NOISE_LINE.match(t) or _CITATION_LINE.search(t) or SCENE_BREAK.match(t):
         return False
     if AUTHOR_AFFIL_LINE.search(t) and not NUM_HEAD.match(t):
         return False
@@ -436,7 +430,7 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
         yb = round(y0 / 6)
         k = (re.sub(r"\d+", "#", l["text"].lower()), yb)
         if margin and len(l["text"]) < 120 and (
-            k in ctx["furniture"] or yb in ctx["furniture_y"] or PAGE_NUM.match(l["text"])
+            k in ctx["furniture"] or PAGE_NUM.match(l["text"])
         ):
             continue
         keep.append(l)
@@ -490,11 +484,16 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
 
     # Table extraction cascade
     table_boxes = []
-    # 1. Ruled grid
-    try:
-        found_tables = page.find_tables().tables
-    except Exception:
-        found_tables = []
+    # 1. Ruled grid (only if page has vector drawings or a table caption)
+    has_table_cap = any(TABLE_CAP.match(l["text"]) for l in lines)
+    has_drawings = bool(page.get_drawings()) if hasattr(page, "get_drawings") else True
+
+    found_tables = []
+    if has_drawings or has_table_cap:
+        try:
+            found_tables = page.find_tables().tables
+        except Exception:
+            found_tables = []
 
     for t in found_tables:
         bbox = tuple(t.bbox)
@@ -723,11 +722,31 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
     two = _two_column(items, W)
     items = _order_items(items, W, two)
 
+    grp_lines = defaultdict(list)
+    for it in items:
+        if it.get("kind") == "line":
+            grp_lines[it.get("grp")].append(it)
+    grp_bounds = {}
+    for g, gls in grp_lines.items():
+        grp_bounds[g] = (
+            min(l["bbox"][0] for l in gls),
+            max(l["bbox"][2] for l in gls),
+        )
+
     blocks: list[Block] = []
     cur = None
 
     def classify(l):
         if ctx.get("in_references"):
+            if _is_heading(l, body, in_references=False):
+                t_clean = l["text"].strip().lower()
+                if (
+                    re.match(r"^(?:appendix|appendices|supplement|exhibit|proof|index|about the author|online appendix)\b", t_clean)
+                    or re.match(r"^(?:table|figure)\s+\d+", t_clean)
+                    or (l["size"] >= body * 1.15 and not _CITATION_LINE.search(l["text"]) and not re.match(r"^[A-Z][a-z]+,\s+[A-Z]", l["text"]))
+                ):
+                    ctx["in_references"] = False
+                    return "heading"
             return "reference"
         if REFERENCES_HEAD.match(l["text"]):
             ctx["in_references"] = True
@@ -749,6 +768,9 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
         if pt <= 0:
             return False
         if k == "heading":
+            is_ch = bool(re.match(r"^(?:chapter|part|book|section)\s+[\dIVXLCDMivxlcdm]+[:\.]?$", last["text"].strip(), re.I))
+            if is_ch and pt <= 2.8 * s:
+                return True
             return (abs(s - last["size"]) < 0.6 and l["bold"] == last["bold"]
                     and pt <= 1.6 * s and not NUM_HEAD.match(l["text"]))
         if k in ("code", "formula"):
@@ -758,6 +780,21 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
             if re.match(r"^[A-Z][a-z]+,\s+[A-Z]|^\(?\d{1,4}[.)\]]", l["text"]):
                 return False
             return pt <= 2.0 * s
+
+        # k == "text" (Body paragraphs)
+        if pt > 1.45 * max(s, pitch):
+            return False
+
+        col_l, col_r = grp_bounds.get(l["grp"], (0, W))
+        is_indent = (l["bbox"][0] > col_l + 8)
+
+        last_t = last["text"].rstrip()
+        last_punct = any(last_t.endswith(p) for p in [".", "!", "?", '"', "'", "”", "’", "—", "-"])
+        last_short = (last["bbox"][2] < col_r - 35)
+
+        if is_indent or (last_punct and last_short):
+            return False
+
         return pt <= 2.4 * max(s, pitch)
 
     def flush():
@@ -774,7 +811,12 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
         )
 
         if k == "heading":
-            text = " ".join(l["text"] for l in cls_lines)
+            if len(cls_lines) == 2 and re.match(r"^(?:chapter|part|book|section)\s+[\dIVXLCDMivxlcdm]+[:\.]?$", cls_lines[0]["text"].strip(), re.I):
+                ch_num = cls_lines[0]["text"].strip().rstrip(":")
+                ch_title = cls_lines[1]["text"].strip()
+                text = f"{ch_num}: {ch_title}"
+            else:
+                text = " ".join(l["text"] for l in cls_lines)
             blocks.append(HeadingBlock(id=b_id, page=pno, text=text, bbox=b_bbox, source="text_layer"))
         elif k == "reference":
             text = cls_lines[0]["text"]
@@ -800,7 +842,7 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
             text = cls_lines[0]["text"]
             for l in cls_lines[1:]:
                 text = _join_lines(text, l["text"], doc_vocab)
-            if not NOISE_LINE.match(text):
+            if not NOISE_LINE.match(text) and not SCENE_BREAK.match(text):
                 blocks.append(ParagraphBlock(id=b_id, page=pno, text=text, bbox=b_bbox, source="text_layer"))
         cur = None
 
@@ -841,16 +883,20 @@ def _process_page(page: fitz.Page, pno: int, lines: list[dict], imgs: list[tuple
     flush()
 
     # Per-page parity computation (B28)
-    raw_text = page.get_text()
-    raw_words = set(re.findall(r"\b[A-Za-z]{4,}\b", raw_text.lower()))
+    page_line_text = " ".join(l["text"] for l in lines)
+    raw_words = Counter(re.findall(r"\b[A-Za-z]{4,}\b", page_line_text.lower()))
     extracted_text = " ".join(getattr(b, "text", "") for b in blocks)
-    extracted_words = set(re.findall(r"\b[A-Za-z]{4,}\b", extracted_text.lower()))
+    extracted_words = Counter(re.findall(r"\b[A-Za-z]{4,}\b", extracted_text.lower()))
+    matched_words = sum((raw_words & extracted_words).values())
+    total_raw_words = sum(raw_words.values())
+    word_parity = (matched_words / total_raw_words) if total_raw_words else 1.0
 
-    raw_nums = set(re.findall(r"\b\d+(?:[\.,]\d+)?%?\b", raw_text))
-    extracted_nums = set(re.findall(r"\b\d+(?:[\.,]\d+)?%?\b", extracted_text))
-    numeric_parity = (len(raw_nums & extracted_nums) / len(raw_nums)) if raw_nums else 1.0
+    raw_nums = Counter(re.findall(r"\b\d+(?:[\.,]\d+)?%?\b", page_line_text))
+    extracted_nums = Counter(re.findall(r"\b\d+(?:[\.,]\d+)?%?\b", extracted_text))
+    matched_nums = sum((raw_nums & extracted_nums).values())
+    total_raw_nums = sum(raw_nums.values())
+    numeric_parity = (matched_nums / total_raw_nums) if total_raw_nums else 1.0
 
-    word_parity = (len(raw_words & extracted_words) / len(raw_words)) if raw_words else 1.0
     if word_parity < 0.97:
         page_flags.append("low_text_parity")
 
@@ -874,40 +920,99 @@ def _extract_from_fitz(
     npages = len(doc)
     pages = list(range(npages))
 
-    # Phase 1: Determine orientation for each page
+    # Phase 1 & 2: Determine orientation, extract lines, and gather vocabulary in a single pass
+    raw, sizes = {}, []
     rotations = {}
     matrices = {}
+    doc_vocab = set()
+
     for p in pages:
         page = doc[p]
-        rot = _determine_page_orientation(page)
+        d = page.get_text("dict")
+
+        # Determine dominant orientation from line dir vectors
+        dirs = Counter()
+        for b in d.get("blocks", []):
+            if b.get("type") == 0:
+                for l in b.get("lines", []):
+                    d_raw = l.get("dir", (1.0, 0.0))
+                    d_axis = (round(d_raw[0]), round(d_raw[1]))
+                    n_chars = sum(len(s.get("text", "")) for s in l.get("spans", []))
+                    dirs[d_axis] += n_chars
+
+        rot = 0
+        if dirs:
+            dom_dir = dirs.most_common(1)[0][0]
+            if dom_dir == (0, -1):
+                rot = 90
+            elif dom_dir == (0, 1):
+                rot = 270
+            elif dom_dir == (-1, 0):
+                rot = 180
+
         rotations[p + 1] = rot
         if rot != 0:
             page.set_rotation((page.rotation + rot) % 360)
-        matrices[p] = page.rotation_matrix
-        fitz.TOOLS.store_shrink(100)
+        mat = page.rotation_matrix
+        matrices[p] = mat
 
-    # Phase 2: Gather raw lines and doc vocabulary
-    raw, sizes = {}, []
-    doc_vocab = set()
-    for p in pages:
-        lines, imgs = _extract_page_lines(doc[p], p + 1, matrices[p])
-        raw[p] = (lines, imgs)
-        sizes.append((doc[p].rect.width, doc[p].rect.height))
+        # Extract lines and image boxes mapped through mat
+        lines, images = [], []
+        for bi, b in enumerate(d.get("blocks", [])):
+            if b.get("type") == 1:
+                r = fitz.Rect(b["bbox"]) * mat
+                images.append((r.x0, r.y0, r.x1, r.y1))
+                continue
+            for ln in b.get("lines", []):
+                spans = [s for s in ln.get("spans", []) if s.get("text", "").strip()]
+                if not spans:
+                    continue
+                text = _clean(" ".join(s["text"] for s in spans))
+                if not text:
+                    continue
+                r = fitz.Rect(ln["bbox"]) * mat
+                total = sum(len(s["text"].strip()) for s in spans)
+                sizes_c, bold, mono, math = Counter(), 0, 0, 0
+                for s in spans:
+                    n = len(s["text"].strip())
+                    sizes_c[round(s["size"], 1)] += n
+                    f, fl = s.get("font", ""), s.get("flags", 0)
+                    if fl & 16 or BOLD_RE.search(f):
+                        bold += n
+                    if fl & 8 or MONO_RE.search(f):
+                        mono += n
+                    if MATH_FONT_RE.match(f):
+                        math += n
+                size = max(sizes_c.items(), key=lambda kv: (kv[1], kv[0]))[0]
+                lines.append(dict(
+                    page=p + 1,
+                    bbox=(r.x0, r.y0, r.x1, r.y1),
+                    text=text,
+                    size=size,
+                    bold=bold / total > 0.7,
+                    mono=mono / total > 0.7,
+                    math=math / total,
+                    bid=(p + 1, bi),
+                ))
+        lines.sort(key=lambda l: (l["bbox"][1], l["bbox"][0]))
+        raw[p] = (lines, images)
+        sizes.append((page.rect.width, page.rect.height))
+
         for l in lines:
             for w in re.findall(r"\b[A-Za-z\-]{2,}\b", l["text"].lower()):
                 doc_vocab.add(w.replace("-", ""))
+
         fitz.TOOLS.store_shrink(100)
 
     all_lines = [l for p in pages for l in raw[p][0]]
     body, pitch, mono_frac = _body_stats(all_lines)
-    furniture, furniture_y = _find_furniture([raw[p][0] for p in pages], sizes, npages)
+    furniture, _ = _find_furniture([raw[p][0] for p in pages], sizes, npages)
 
     ctx = dict(
         body=body,
         pitch=pitch,
         mono_doc=mono_frac > 0.6,
         furniture=furniture,
-        furniture_y=furniture_y,
         asset_collector=asset_collector,
         rotations=rotations,
         doc_vocab=doc_vocab,

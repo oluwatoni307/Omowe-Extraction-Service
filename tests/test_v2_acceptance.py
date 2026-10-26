@@ -172,14 +172,14 @@ def test_g1_reference_paper():
     tables = [b for b in doc.blocks if b.type == BlockType.TABLE]
     assert len(tables) >= 20, f"Expected >= 20 tables, got {len(tables)}"
     
-    # 3. Headings on or after page 28 (References)
-    headings_after_28 = [b for b in doc.blocks if b.page >= 28 and b.type == BlockType.HEADING]
-    # At most the 'References' heading itself
-    assert len(headings_after_28) <= 1, f"Expected <= 1 heading on/after p.28, got {len(headings_after_28)}"
+    # 3. Headings in References section (pages 28-32)
+    headings_in_ref = [b for b in doc.blocks if 28 <= b.page <= 32 and b.type == BlockType.HEADING]
+    # Exactly the 'References' heading itself, no citations misclassified as headings
+    assert len(headings_in_ref) == 1 and headings_in_ref[0].text == "References"
     
-    # 4. Zero important passages on or after page 28
-    imp_after_28 = [p for p in imp.passages if doc.get(p.block_id).page >= 28]
-    assert len(imp_after_28) == 0, f"Expected 0 importance passages on/after p.28, got {len(imp_after_28)}"
+    # 4. Zero important passages in References section (pages 28-32)
+    imp_in_ref = [p for p in imp.passages if 28 <= doc.get(p.block_id).page <= 32]
+    assert len(imp_in_ref) == 0, f"Expected 0 importance passages in references, got {len(imp_in_ref)}"
 
     # 5. Figure checks: Figure 1 native high-res, Figure A1 has 4 panels, Figure A2 has 3 panels, page 1 logo decorative
     fig1 = [b for b in doc.blocks if b.page == 36 and b.type == BlockType.IMAGE]
